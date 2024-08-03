@@ -1,4 +1,6 @@
 let groupId;
+let currentWindowId;
+const tabInfoMap = new Map();
 
 const notify = (message) => {
   chrome.notifications.create({
@@ -9,19 +11,24 @@ const notify = (message) => {
   });
 };
 
-const getTabsInCurrentWindow = async () => {
-  const queryOptions = { currentWindow: true };
-  // `tab` will either be a `tabs.Tab` instance or `undefined`.
-  const tabs = await chrome.tabs.query(queryOptions);
-  return tabs;
-};
-
 const getTabsInfo = async () => {
-  const tabs = await getTabsInCurrentWindow();
+  const tabs = await chrome.tabs.query({ currentWindow: true });
+  tabs.forEach((tab) => {
+    const info = tabInfoMap.get(tab.id) ?? {};
+    tab.lastAccessed &&
+      tabInfoMap.set(tab.id, {
+        ...info,
+        lastAccessed: tab.lastAccessed,
+      });
+  });
   const ungroupedTabs = tabs.filter((tab) => tab.groupId === -1 && !tab.pinned);
-  const pageWidth = tabs[0].width;
-  const tabWidth = 230;
-  const maxTabsCount = Math.floor(pageWidth / tabWidth);
+  if (!ungroupedTabs.length) {
+    return null;
+  }
+  // const pageWidth = tabs[0].width;
+  // const tabWidth = 230;
+  // const maxTabsCount = Math.floor(pageWidth / tabWidth);
+  const maxTabsCount = 3;
   const normalTabsCount = ungroupedTabs.length;
 
   return {
@@ -35,21 +42,44 @@ const getTabsInfo = async () => {
 const handleTabsOverThreshold = async (ungroupedTabs, index) => {
   // FIXME: 如果用户已经创建分组怎么办？ 如果用户有多个分组怎么办？
 
+  // NOTE: 当标签页移动后，lastAccessed 会变为 undefined
+  const tabs = ungroupedTabs.slice().map((tab) => ({
+    ...tab,
+    lastAccessed: tab.lastAccessed || tabInfoMap.get(tab.id)?.lastAccessed || 0,
+  }));
+  console.log(
+    "before",
+    tabs.map((item) => ({
+      title: item.title,
+      lastAccessed: item.lastAccessed,
+    }))
+  );
   // 需要移入分组的标签页 id
-  const tabIds = ungroupedTabs
+  const tabIds = tabs
     .sort((a, b) => a.lastAccessed - b.lastAccessed)
     .slice(0, index)
     .map((tab) => tab.id);
-  // 先将标签页移到最左边
-  await chrome.tabs.move(tabIds, {
-    index: 0,
-  });
+  console.log(
+    "after",
+    tabs
+      .sort((a, b) => a.lastAccessed - b.lastAccessed)
+      .map((item) => ({
+        title: item.title,
+        lastAccessed: item.lastAccessed,
+      }))
+  );
+  // 创建分组
   const newGroupId = await chrome.tabs.group({
     groupId,
     tabIds,
   });
   groupId = newGroupId;
-  chrome.tabGroups.update(groupId, {
+  // 将分组移到首位
+  await chrome.tabGroups.move(newGroupId, {
+    index: 0,
+  });
+  // 更新分组的状态
+  await chrome.tabGroups.update(newGroupId, {
     collapsed: true,
     color: "purple",
     title: "More",
@@ -62,14 +92,25 @@ const handleTabsBelowThreshold = async () => {
   });
   const onlyOneTab = groupTabs.length === 1;
   const lastTabInGroup = groupTabs[groupTabs.length - 1];
-  lastTabInGroup && chrome.tabs.ungroup(lastTabInGroup.id);
+  if (lastTabInGroup) {
+    await chrome.tabs.ungroup(lastTabInGroup.id);
+  }
   if (onlyOneTab) {
     groupId = undefined;
+  }
+  if (groupId) {
+    await chrome.tabGroups.move(groupId, {
+      index: 0,
+    });
   }
 };
 
 const handleIncrease = async () => {
-  const { maxTabsCount, normalTabsCount, ungroupedTabs } = await getTabsInfo();
+  const tabsInfo = await getTabsInfo();
+  if (!tabsInfo) {
+    return;
+  }
+  const { maxTabsCount, normalTabsCount, ungroupedTabs } = tabsInfo;
 
   if (normalTabsCount > maxTabsCount) {
     handleTabsOverThreshold(ungroupedTabs, normalTabsCount - maxTabsCount);
@@ -77,7 +118,11 @@ const handleIncrease = async () => {
 };
 
 const handleDecrease = async () => {
-  const { maxTabsCount, normalTabsCount } = await getTabsInfo();
+  const tabsInfo = await getTabsInfo();
+  if (!tabsInfo) {
+    return;
+  }
+  const { maxTabsCount, normalTabsCount } = tabsInfo;
 
   if (normalTabsCount < maxTabsCount && groupId) {
     handleTabsBelowThreshold();
@@ -85,7 +130,14 @@ const handleDecrease = async () => {
 };
 
 const init = async () => {
-  const { maxTabsCount, normalTabsCount, ungroupedTabs } = await getTabsInfo();
+  const window = await chrome.windows.getCurrent();
+  currentWindowId = window.id;
+
+  const tabsInfo = await getTabsInfo();
+  if (!tabsInfo) {
+    return;
+  }
+  const { maxTabsCount, normalTabsCount, ungroupedTabs } = tabsInfo;
 
   if (normalTabsCount > maxTabsCount) {
     handleTabsOverThreshold(ungroupedTabs, normalTabsCount - maxTabsCount);
@@ -96,24 +148,6 @@ const init = async () => {
 
 init();
 
-// 当标签页附加到窗口时触发；例如，由于标签页在窗口之间移动。
-chrome.tabs.onAttached.addListener(() => {
-  chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-    if (changeInfo.status === "complete") {
-      // 标签页加载完成后,执行编辑操作
-      handleIncrease();
-    }
-  });
-});
-// 当标签页与窗口分离时触发；例如，由于标签页在窗口之间移动。
-chrome.tabs.onDetached.addListener(() => {
-  chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-    if (changeInfo.status === "complete") {
-      // 标签页加载完成后,执行编辑操作
-      handleDecrease();
-    }
-  });
-});
 // 创建标签页时触发
 chrome.tabs.onCreated.addListener(() => {
   handleIncrease();
@@ -122,6 +156,49 @@ chrome.tabs.onCreated.addListener(() => {
 chrome.tabs.onRemoved.addListener(() => {
   handleDecrease();
 });
+// TODO:
+// 当标签页附加到窗口时触发；例如，由于标签页在窗口之间移动。
+// chrome.tabs.onAttached.addListener(() => {
+//   try {
+//     handleIncrease();
+//   } catch (err) {
+//     console.log(err);
+//   }
+// });
+// TODO:
+// 当标签页与窗口分离时触发；例如，由于标签页在窗口之间移动。
+// chrome.tabs.onDetached.addListener(async () => {
+//   const tabs = await chrome.tabs.query({
+//     windowId: currentWindowId,
+//   });
+//   const ungroupedTabs = tabs.filter((tab) => tab.groupId === -1 && !tab.pinned);
+//   console.log(currentWindowId);
+//   console.log(ungroupedTabs);
+//   if (!ungroupedTabs.length) {
+//     return;
+//   }
+//   const pageWidth = tabs[0].width;
+//   const tabWidth = 230;
+//   const maxTabsCount = Math.floor(pageWidth / tabWidth);
+//   const normalTabsCount = ungroupedTabs.length;
+//
+//   if (normalTabsCount < maxTabsCount && groupId) {
+//     const groupTabs = await chrome.tabs.query({
+//       groupId,
+//       windowId: currentWindowId,
+//     });
+//     console.log(groupId);
+//     const onlyOneTab = groupTabs.length === 1;
+//     const lastTabInGroup = groupTabs[groupTabs.length - 1];
+//     lastTabInGroup && chrome.tabs.ungroup(lastTabInGroup.id);
+//     if (onlyOneTab) {
+//       groupId = undefined;
+//     }
+//   }
+// });
+// chrome.tabs.onMoved.addListener(() => {
+//   console.log("moved");
+// });
 // 在窗口中的活动标签页发生变化时触发。
 chrome.tabs.onActivated.addListener(async () => {
   const tabs = await chrome.tabs.query({
@@ -132,7 +209,11 @@ chrome.tabs.onActivated.addListener(async () => {
   const isGroupedTab = tab && tab.groupId === groupId;
   if (isGroupedTab) {
     setTimeout(async () => {
-      const { ungroupedTabs } = await getTabsInfo();
+      const tabsInfo = await getTabsInfo();
+      if (!tabsInfo) {
+        return;
+      }
+      const { ungroupedTabs } = tabsInfo;
       const firstAccessedTab = ungroupedTabs.sort(
         (a, b) => a.lastAccessed - b.lastAccessed
       )[0];
@@ -157,7 +238,21 @@ chrome.tabs.onActivated.addListener(async () => {
     }, 100);
   }
 });
+chrome.windows.onFocusChanged.addListener((windowId) => {
+  currentWindowId = windowId;
+});
+chrome.tabGroups.onRemoved.addListener((tabGroup) => {
+  const { id } = tabGroup;
+  if (id === groupId) {
+    groupId = undefined;
+  }
+});
 
 // BUG:
 // 取消分组，无法触发
 // 附加或分离标签页，无法触发
+// 新窗口增加 tab 会影响旧窗口
+// 多窗口
+
+// TODO:
+// 收缩其他自定义组
