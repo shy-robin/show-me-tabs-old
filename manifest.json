@@ -7,6 +7,9 @@
     "default_popup": "./popup/popup.html",
     "default_icon": "./images/hi.png"
   },
+  "background": {
+    "service_worker": "background.js"
+  },
   "host_permissions": ["https://developer.chrome.com/*"],
-  "permissions": ["tabGroups"]
+  "permissions": ["tabGroups", "notifications", "tabs"]
 }
