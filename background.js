@@ -32,26 +32,28 @@ const getTabsInfo = async () => {
   };
 };
 
-const handleTabsOverThreshold = (ungroupedTabs, index) => {
-  // FIXME: 如果用户已经创建分组怎么办？
-  // 如果用户有多个分组怎么办？
-  chrome.tabs.group(
-    {
-      groupId,
-      tabIds: ungroupedTabs
-        .sort((a, b) => a.lastAccessed - b.lastAccessed)
-        .slice(0, index)
-        .map((tab) => tab.id),
-    },
-    (id) => {
-      groupId = id;
-      chrome.tabGroups.update(id, {
-        collapsed: true,
-        color: "purple",
-        title: "More",
-      });
-    }
-  );
+const handleTabsOverThreshold = async (ungroupedTabs, index) => {
+  // FIXME: 如果用户已经创建分组怎么办？ 如果用户有多个分组怎么办？
+
+  // 需要移入分组的标签页 id
+  const tabIds = ungroupedTabs
+    .sort((a, b) => a.lastAccessed - b.lastAccessed)
+    .slice(0, index)
+    .map((tab) => tab.id);
+  // 先将标签页移到最左边
+  await chrome.tabs.move(tabIds, {
+    index: 0,
+  });
+  const newGroupId = await chrome.tabs.group({
+    groupId,
+    tabIds,
+  });
+  groupId = newGroupId;
+  chrome.tabGroups.update(groupId, {
+    collapsed: true,
+    color: "purple",
+    title: "More",
+  });
 };
 
 const handleTabsBelowThreshold = async () => {
@@ -69,8 +71,6 @@ const handleTabsBelowThreshold = async () => {
 const handleIncrease = async () => {
   const { maxTabsCount, normalTabsCount, ungroupedTabs } = await getTabsInfo();
 
-  notify(`Increase: ${normalTabsCount} / ${maxTabsCount}`);
-
   if (normalTabsCount > maxTabsCount) {
     handleTabsOverThreshold(ungroupedTabs, normalTabsCount - maxTabsCount);
   }
@@ -79,8 +79,6 @@ const handleIncrease = async () => {
 const handleDecrease = async () => {
   const { maxTabsCount, normalTabsCount } = await getTabsInfo();
 
-  notify(`Decrease: ${normalTabsCount} / ${maxTabsCount}`);
-
   if (normalTabsCount < maxTabsCount && groupId) {
     handleTabsBelowThreshold();
   }
@@ -88,8 +86,6 @@ const handleDecrease = async () => {
 
 const init = async () => {
   const { maxTabsCount, normalTabsCount, ungroupedTabs } = await getTabsInfo();
-
-  notify(`Init: ${normalTabsCount} / ${maxTabsCount}`);
 
   if (normalTabsCount > maxTabsCount) {
     handleTabsOverThreshold(ungroupedTabs, normalTabsCount - maxTabsCount);
@@ -125,6 +121,41 @@ chrome.tabs.onCreated.addListener(() => {
 // 在标签页关闭时触发。
 chrome.tabs.onRemoved.addListener(() => {
   handleDecrease();
+});
+// 在窗口中的活动标签页发生变化时触发。
+chrome.tabs.onActivated.addListener(async () => {
+  const tabs = await chrome.tabs.query({
+    active: true,
+    currentWindow: true,
+  });
+  const [tab] = tabs;
+  const isGroupedTab = tab && tab.groupId === groupId;
+  if (isGroupedTab) {
+    setTimeout(async () => {
+      const { ungroupedTabs } = await getTabsInfo();
+      const firstAccessedTab = ungroupedTabs.sort(
+        (a, b) => a.lastAccessed - b.lastAccessed
+      )[0];
+
+      if (firstAccessedTab) {
+        await chrome.tabs.move([firstAccessedTab.id], {
+          index: 0,
+        });
+        await chrome.tabs.group({
+          groupId,
+          tabIds: [firstAccessedTab.id],
+        });
+      }
+
+      await chrome.tabs.ungroup(tab.id);
+
+      await chrome.tabGroups.update(groupId, {
+        collapsed: true,
+        color: "purple",
+        title: "More",
+      });
+    }, 100);
+  }
 });
 
 // BUG:
