@@ -38,7 +38,10 @@ const handleTabsOverThreshold = (ungroupedTabs, index) => {
   chrome.tabs.group(
     {
       groupId,
-      tabIds: ungroupedTabs.slice(0, index).map((tab) => tab.id),
+      tabIds: ungroupedTabs
+        .sort((a, b) => a.lastAccessed - b.lastAccessed)
+        .slice(0, index)
+        .map((tab) => tab.id),
     },
     (id) => {
       groupId = id;
