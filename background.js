@@ -28,7 +28,7 @@ const getTabsInfo = async () => {
   // const pageWidth = tabs[0].width;
   // const tabWidth = 230;
   // const maxTabsCount = Math.floor(pageWidth / tabWidth);
-  const maxTabsCount = 3;
+  const maxTabsCount = 6;
   const normalTabsCount = ungroupedTabs.length;
 
   return {
@@ -68,6 +68,9 @@ const handleTabsOverThreshold = async (ungroupedTabs, index) => {
         lastAccessed: item.lastAccessed,
       }))
   );
+  console.log("over");
+  console.log("groupId", groupId);
+  console.log("currentWindowId", currentWindowId);
   // 创建分组
   const newGroupId = await chrome.tabs.group({
     groupId,
@@ -130,6 +133,9 @@ const handleDecrease = async () => {
 };
 
 const init = async () => {
+  console.log("init");
+  console.log("groupId", groupId);
+  console.log("currentWindowId", currentWindowId);
   const window = await chrome.windows.getCurrent();
   currentWindowId = window.id;
 
@@ -253,6 +259,7 @@ chrome.tabGroups.onRemoved.addListener((tabGroup) => {
 // 附加或分离标签页，无法触发
 // 新窗口增加 tab 会影响旧窗口
 // 多窗口
+// 长时间不使用会重新分组，可能是销毁了变量，可能是 groupId 变化了
 
 // TODO:
 // 收缩其他自定义组
